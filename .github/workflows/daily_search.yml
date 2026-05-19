@@ -1,25 +1,46 @@
-name: Daily HH Search
+name: HH.ru Vacancy Search
 
 on:
   schedule:
-    - cron: "0 6 * * *"
-  workflow_dispatch:
+    # Запуск каждый день в 9:00 UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch: # Ручной запуск
+
+permissions:
+  contents: read
 
 jobs:
   search:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
+          cache: 'pip'
+
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run search
+
+      - name: Run HH.ru search script
         env:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          HH_SEARCH_TEXT: ${{ vars.HH_SEARCH_TEXT || 'финансовый директор' }}
+          HH_AREA_IDS: ${{ vars.HH_AREA_IDS || '1,11,1913' }}
         run: python hh_search.py
-        
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-logs
+          path: |
+            *.log
+          retention-days: 7
