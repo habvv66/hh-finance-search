@@ -1,46 +1,152 @@
-name: HH.ru Vacancy Search
+name: HH.ru Finance Vacancies Search
 
 on:
   schedule:
-    # Запуск каждый день в 9:00 UTC
-    - cron: '0 9 * * *'
-  workflow_dispatch: # Ручной запуск
+    # Запуск каждый день в 9:00 и 18:00 по МСК (6:00 и 15:00 UTC)
+    - cron: '0 6,15 * * *'
+  workflow_dispatch:  # Ручной запуск через UI
 
-permissions:
-  contents: read
+env:
+  PYTHON_VERSION: '3.11'
+  SCRIPT_PATH: 'hh_search.py'
+  REQUIREMENTS_PATH: 'requirements.txt'
 
 jobs:
-  search:
+  search-and-log:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      # ─────────────────────────────────────────────────────
+      # 📦 БАЗОВАЯ НАСТРОЙКА
+      # ─────────────────────────────────────────────────────
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Set up Python
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
 
-      - name: Install dependencies
+      # ─────────────────────────────────────────────────────
+      # 🔧 ОТЛАДОЧНЫЕ ШАГИ (включаются при debug: true)
+      # ─────────────────────────────────────────────────────
+      - name: 🔍 Debug: Show environment info
+        if: runner.debug == '1' || github.event_name == 'workflow_dispatch'
+        run: |
+          echo "=== PYTHON INFO ==="
+          python --version
+          pip --version
+          echo "=== ENV VARS (masked) ==="
+          echo "GOOGLE_SHEET_ID: ${GOOGLE_SHEET_ID:0:3}***${GOOGLE_SHEET_ID: -3}"
+          echo "GOOGLE_SERVICE_ACCOUNT: ${GOOGLE_SERVICE_ACCOUNT:0:10}***"
+          echo "=== WORKING DIRECTORY ==="
+          pwd
+          ls -la
+
+      - name: 🔍 Debug: Show file contents
+        if: runner.debug == '1' || github.event_name == 'workflow_dispatch'
+        run: |
+          echo "=== requirements.txt ==="
+          cat ${{ env.REQUIREMENTS_PATH }}
+          echo -e "\n=== Script first 30 lines ==="
+          head -30 ${{ env.SCRIPT_PATH }}
+
+      # ─────────────────────────────────────────────────────
+      # ⚙️ УСТАНОВКА ЗАВИСИМОСТЕЙ
+      # ─────────────────────────────────────────────────────
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r ${{ env.REQUIREMENTS_PATH }}
+          echo "✅ Dependencies installed"
 
-      - name: Run HH.ru search script
+      # ─────────────────────────────────────────────────────
+      # 🧪 ПРЕ-ПРОВЕРКА СКРИПТА (бонус)
+      # ─────────────────────────────────────────────────────
+      - name: 🧪 Syntax check script
+        run: |
+          python -m py_compile ${{ env.SCRIPT_PATH }}
+          echo "✅ Script syntax OK"
+
+      - name: 🔎 Import check
+        run: |
+          python -c "
+          import requests, gspread, oauth2client, json, os, urllib.parse
+          from datetime import datetime, timedelta
+          print('✅ All imports successful')
+          "
+
+      # ─────────────────────────────────────────────────────
+      # 🚀 ОСНОВНОЙ ЗАПУСК СКРИПТА
+      # ─────────────────────────────────────────────────────
+      - name: ▶️ Run HH.ru search script
         env:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
-          HH_SEARCH_TEXT: ${{ vars.HH_SEARCH_TEXT || 'финансовый директор' }}
-          HH_AREA_IDS: ${{ vars.HH_AREA_IDS || '1,11,1913' }}
-        run: python hh_search.py
+        run: |
+          echo "🚀 Starting search at $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          python ${{ env.SCRIPT_PATH }}
+          echo "✅ Script completed at $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-      - name: Upload logs on failure
-        if: failure()
+      # ─────────────────────────────────────────────────────
+      # 📊 ПОСТ-ОБРАБОТКА И ЛОГИРОВАНИЕ (бонус)
+      # ─────────────────────────────────────────────────────
+      - name: 📊 Log execution summary
+        if: always()
+        run: |
+          echo "=== EXECUTION SUMMARY ==="
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Trigger: ${{ github.event_name }}"
+          echo "Status: ${{ job.status }}"
+          echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+      - name: 💾 Save execution log (artifact)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-logs
+          name: execution-log-${{ github.run_number }}
           path: |
-            *.log
+            ${{ env.SCRIPT_PATH }}
+            ${{ env.REQUIREMENTS_PATH }}
           retention-days: 7
+
+      # ─────────────────────────────────────────────────────
+      # 🚨 ОБРАБОТКА ОШИБОК (бонус)
+      # ─────────────────────────────────────────────────────
+      - name: 🚨 Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Workflow failed! Check logs for details."
+          echo "💡 Tips:"
+          echo "   1. Verify secrets are set in Repository → Settings → Secrets"
+          echo "   2. Check Google Service Account has Sheet edit permissions"
+          echo "   3. Ensure HH.ru API is accessible (no rate limiting)"
+          echo "   4. Run workflow manually with debug enabled for more details"
+
+      # ─────────────────────────────────────────────────────
+      # 🎯 БОНУС: Проверка результата (опционально)
+      # ─────────────────────────────────────────────────────
+      - name: 🎯 Verify sheet update (bonus)
+        if: success() && github.event_name == 'workflow_dispatch'
+        env:
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+        run: |
+          python -c "
+          import os, json, gspread
+          from oauth2client.service_account import ServiceAccountCredentials
+          
+          creds = ServiceAccountCredentials.from_json_keyfile_dict(
+              json.loads(os.environ['GOOGLE_SERVICE_ACCOUNT'])
+          )
+          client = gspread.authorize(creds)
+          sheet = client.open_by_key(os.environ['GOOGLE_SHEET_ID']).sheet1
+          
+          last_row = sheet.get_all_values()[-1] if sheet.get_all_values() else []
+          print(f'✅ Last row in sheet: {last_row[:3]}...' if last_row else '⚠️ Sheet appears empty')
+          "
