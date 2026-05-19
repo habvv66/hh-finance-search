@@ -29,11 +29,11 @@ def main():
         print(f"Google Sheets Error: {e}")
         return
 
+    # Простой запрос к HH.ru
     params = {
         'text': 'финансовый директор',
         'area': 113,
-        'per_page': 20,
-        'order_by': 'publication_time'
+        'per_page': 10
     }
     
     headers = {
@@ -42,16 +42,14 @@ def main():
     }
     
     try:
+        # requests сам закодирует URL правильно
         response = requests.get('https://api.hh.ru/vacancies', params=params, headers=headers, timeout=30)
         time.sleep(0.3)
         
         print(f"HH.ru status: {response.status_code}")
         
-        if response.status_code == 403:
-            print("ERROR 403: Access denied")
-            return
-        elif response.status_code != 200:
-            print(f"HH.ru error: {response.status_code}")
+        if response.status_code != 200:
+            print(f"HH.ru error: {response.text}")
             return
             
         items = response.json().get('items', [])
