@@ -2,7 +2,7 @@ import os
 import requests
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -23,59 +23,55 @@ def main():
         sheet = client.open_by_key(sheet_id).sheet1
         
         if sheet.cell(1, 1).value == "":
-            headers = ["Дата поиска", "Название", "Зарплата", "Компания", "Дней в поиске", "Ссылка", "Город"]
+            headers = ["Дата", "Вакансия", "ЗП", "Компания", "Дней", "Ссылка", "Город"]
             sheet.insert_row(headers, 1)
     except Exception as e:
-        print(f"Google Sheets Error: {e}")
+        print(f"Google Error: {e}")
         return
 
-    # Простой запрос к HH.ru
+    # Запрос к HH.ru
     params = {
         'text': 'финансовый директор',
         'area': 113,
         'per_page': 10
     }
     
+    # ВАЖНО: Стандартный браузерный User-Agent
     headers = {
-        'User-Agent': 'MyApp/1.0 (habvv66@gmail.com)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json'
     }
     
     try:
-        # requests сам закодирует URL правильно
         response = requests.get('https://api.hh.ru/vacancies', params=params, headers=headers, timeout=30)
-        time.sleep(0.3)
+        time.sleep(0.5)
         
-        print(f"HH.ru status: {response.status_code}")
+        print(f"Status: {response.status_code}")
         
         if response.status_code != 200:
-            print(f"HH.ru error: {response.text}")
+            print(f"Error: {response.text}")
             return
             
         items = response.json().get('items', [])
-        print(f"Found {len(items)} vacancies.")
+        print(f"Found: {len(items)}")
         
         for item in items:
-            salary = item.get('salary') or {}
-            if salary:
-                salary_text = f"{salary.get('from', '?')}-{salary.get('to', '?')} {salary.get('currency', 'RUB')}"
-            else:
-                salary_text = "Не указана"
-            
-            pub_date = datetime.fromisoformat(item['published_at'].replace('Z', '+00:00'))
-            days = (datetime.now(pub_date.tzinfo) - pub_date).days
+            sal = item.get('salary') or {}
+            zp = f"{sal.get('from','?')}-{sal.get('to','?')} {sal.get('currency','RUB')}" if sal else "Не указана"
+            pub = datetime.fromisoformat(item['published_at'].replace('Z','+00:00'))
+            days = (datetime.now(pub.tzinfo) - pub).days
             
             sheet.append_row([
                 datetime.now().strftime("%Y-%m-%d"),
                 item['name'],
-                salary_text,
+                zp,
                 item['employer']['name'],
                 days,
                 item['alternate_url'],
                 item['area']['name']
             ])
         
-        print(f"Added {len(items)} rows.")
+        print(f"Added: {len(items)}")
         
     except Exception as e:
         print(f"Error: {e}")
