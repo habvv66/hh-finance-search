@@ -1,251 +1,164 @@
-#!/usr/bin/env python3
-"""
-Поиск вакансий на HH.ru и запись в Google Sheets.
-Запускается в GitHub Actions.
-"""
-
 import os
 import sys
-import json
-import time
-import logging
 import requests
+import json
+import urllib.parse
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any
-
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-# === Настройка логирования ===
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    stream=sys.stdout
-)
-logger = logging.getLogger(__name__)
-
-# === Константы ===
-HH_API_BASE = 'https://api.hh.ru'
-HH_API_TIMEOUT = 30
-HH_MAX_RETRIES = 3
-HH_RETRY_BACKOFF = 2  # секунды, экспоненциальный рост
-HH_RATE_LIMIT_DELAY = 1.0  # задержка между запросами, секунды
-
-GOOGLE_SCOPES = [
-    'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive'
-]
-
-
-def create_requests_session() -> requests.Session:
-    """Создаёт сессию с настройками повторов и таймаутов."""
-    session = requests.Session()
-    retry = Retry(
-        total=HH_MAX_RETRIES,
-        backoff_factor=HH_RETRY_BACKOFF,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=['GET', 'POST']
+def setup_logging():
+    """Настройка базового логгирования"""
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        stream=sys.stdout
     )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount('https://', adapter)
-    session.mount('http://', adapter)
-    return session
+    return logging.getLogger(__name__)
 
-
-def fetch_vacancies(
-    session: requests.Session,
-    search_text: str,
-    area_ids: List[str],
-    per_page: int = 20
-) -> List[Dict[str, Any]]:
-    """Получает вакансии с HH.ru с обработкой лимитов."""
-    all_items = []
+def main():
+    logger = setup_logging()
+    logger.info("🚀 Starting HH.ru vacancy search...")
     
-    for area_id in area_ids:
-        params = {
-            'text': search_text,
-            'area': area_id,
-            'per_page': per_page,
-            'order_by': 'publication_time'
-        }
-        
-        url = f'{HH_API_BASE}/vacancies'
-        headers = {
-            'User-Agent': 'hh-finance-search-bot/1.0 (api@hh.ru)',
-            'Accept': 'application/json'
-        }
-        
-        try:
-            logger.info(f'Запрос вакансий: area={area_id}, text="{search_text}"')
-            response = session.get(url, params=params, headers=headers, timeout=HH_API_TIMEOUT)
-            
-            # Обработка 429 и других ошибок
-            if response.status_code == 429:
-                retry_after = response.headers.get('Retry-After', HH_RETRY_BACKOFF)
-                logger.warning(f'Rate limit. Ждём {retry_after}с...')
-                time.sleep(int(retry_after))
-                response = session.get(url, params=params, headers=headers, timeout=HH_API_TIMEOUT)
-            
-            response.raise_for_status()
-            data = response.json()
-            items = data.get('items', [])
-            all_items.extend(items)
-            logger.info(f'Получено {len(items)} вакансий для area={area_id}')
-            
-            # Пауза между запросами к API
-            time.sleep(HH_RATE_LIMIT_DELAY)
-            
-        except requests.exceptions.HTTPError as e:
-            logger.error(f'HTTP ошибка для area={area_id}: {e}')
-            if e.response is not None:
-                logger.error(f'Ответ сервера: {e.response.text[:200]}')
-        except requests.exceptions.RequestException as e:
-            logger.error(f'Ошибка запроса для area={area_id}: {e}')
-        except json.JSONDecodeError as e:
-            logger.error(f'Ошибка парсинга JSON для area={area_id}: {e}')
-    
-    return all_items
-
-
-def format_salary(salary: Optional[Dict[str, Any]]) -> str:
-    """Форматирует информацию о зарплате."""
-    if not salary:
-        return 'Не указана'
-    
-    frm = salary.get('from')
-    to = salary.get('to')
-    currency = salary.get('currency', 'RUB')
-    
-    if frm and to:
-        return f'{frm}-{to} {currency}'
-    elif frm:
-        return f'от {frm} {currency}'
-    elif to:
-        return f'до {to} {currency}'
-    return 'Не указана'
-
-
-def parse_published_date(date_str: str) -> Optional[datetime]:
-    """Парсит дату публикации в формате ISO 8601."""
-    try:
-        # HH.ru возвращает формат: 2024-01-15T10:30:00+0300
-        if date_str.endswith('Z'):
-            date_str = date_str[:-1] + '+00:00'
-        return datetime.fromisoformat(date_str)
-    except (ValueError, AttributeError) as e:
-        logger.warning(f'Не удалось распарсить дату "{date_str}": {e}')
-        return None
-
-
-def calculate_days_since(date: Optional[datetime]) -> int:
-    """Вычисляет количество дней с указанной даты."""
-    if not date:
-        return -1
-    now = datetime.now(timezone.utc)
-    diff = now - date
-    return max(0, diff.days)
-
-
-def init_google_sheet(sheet_id: str, creds_json: str) -> Optional[gspread.Spreadsheet]:
-    """Инициализирует подключение к Google Sheets."""
-    try:
-        creds_dict = json.loads(creds_json)
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, GOOGLE_SCOPES)
-        client = gspread.authorize(creds)
-        return client.open_by_key(sheet_id)
-    except json.JSONDecodeError as e:
-        logger.error(f'Ошибка парсинга JSON ключа: {e}')
-    except Exception as e:
-        logger.error(f'Ошибка подключения к Google Sheets: {type(e).__name__}: {e}')
-    return None
-
-
-def ensure_headers(sheet: gspread.Worksheet, headers: List[str]) -> None:
-    """Создаёт заголовки, если таблица пустая."""
-    try:
-        first_cell = sheet.cell(1, 1).value
-        if not first_cell or first_cell.strip() == '':
-            sheet.insert_row(headers, 1)
-            logger.info('Заголовки добавлены в таблицу')
-    except Exception as e:
-        logger.warning(f'Не удалось проверить/добавить заголовки: {e}')
-
-
-def append_rows(sheet: gspread.Worksheet, rows: List[List[Any]], start_row: int = 2) -> bool:
-    """Добавляет строки в таблицу."""
-    if not rows:
-        logger.info('Нет данных для добавления')
-        return True
-    
-    try:
-        sheet.insert_rows(rows, start_row)
-        logger.info(f'Добавлено {len(rows)} строк в таблицу')
-        return True
-    except Exception as e:
-        logger.error(f'Ошибка записи в таблицу: {type(e).__name__}: {e}')
-        return False
-
-
-def main() -> int:
-    """Точка входа."""
-    logger.info('=== Запуск поиска вакансий ===')
-    
-    # 1. Проверка секретов
+    # 1. Получаем настройки из Secrets
     sheet_id = os.environ.get('GOOGLE_SHEET_ID')
     creds_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT')
-    
+
     if not sheet_id or not creds_json:
-        logger.error('ERROR: Отсутствуют обязательные переменные окружения!')
-        logger.error('Проверьте настройки Secrets в репозитории:')
-        logger.error('  - GOOGLE_SHEET_ID')
-        logger.error('  - GOOGLE_SERVICE_ACCOUNT')
-        return 1
-    
-    # 2. Инициализация сессии и Google Sheets
-    session = create_requests_session()
-    
-    spreadsheet = init_google_sheet(sheet_id, creds_json)
-    if not spreadsheet:
-        return 1
-    
-    sheet = spreadsheet.sheet1
-    headers = ['Дата поиска', 'Название', 'Зарплата', 'Компания', 'Дней в поиске', 'Ссылка', 'Город']
-    ensure_headers(sheet, headers)
-    
-    # 3. Поиск вакансий
-    search_text = os.environ.get('HH_SEARCH_TEXT', 'финансовый директор')
-    area_ids = os.environ.get('HH_AREA_IDS', '1,11,1913').split(',')
-    
-    logger.info(f'Поиск: текст="{search_text}", регионы={area_ids}')
-    
-    vacancies = fetch_vacancies(session, search_text, area_ids)
-    logger.info(f'Всего найдено вакансий: {len(vacancies)}')
-    
-    # 4. Подготовка данных
-    rows_to_add = []
-    for item in vacancies:
-        pub_date = parse_published_date(item.get('published_at'))
-        days_diff = calculate_days_since(pub_date)
+        logger.error("❌ ERROR: Missing required secrets!")
+        logger.error("   - GOOGLE_SHEET_ID")
+        logger.error("   - GOOGLE_SERVICE_ACCOUNT")
+        sys.exit(1)
+
+    # 2. Настраиваем доступ к Google Таблицам
+    try:
+        logger.info("🔐 Authorizing Google Sheets access...")
+        creds_dict = json.loads(creds_json)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(
+            creds_dict, 
+            scopes=['https://spreadsheets.google.com/feeds', 
+                   'https://www.googleapis.com/auth/drive']
+        )
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key(sheet_id).sheet1
         
-        rows_to_add.append([
-            datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
-            item.get('name', 'Без названия'),
-            format_salary(item.get('salary')),
-            item.get('employer', {}).get('name', 'Не указано'),
-            days_diff if days_diff >= 0 else '',
-            item.get('alternate_url', ''),
-            item.get('area', {}).get('name', '')
-        ])
-    
-    # 5. Запись в таблицу
-    success = append_rows(sheet, rows_to_add)
-    
-    logger.info('=== Завершение ===')
-    return 0 if success else 1
+        # Заголовки, если таблица пустая или первый ряд пустой
+        first_cell = sheet.cell(1, 1).value if sheet.row_values(1) else None
+        if not first_cell or first_cell.strip() == "":
+            logger.info("📝 Initializing sheet headers...")
+            headers = ["Дата поиска", "Название", "Зарплата", "Компания", "Дней в поиске", "Ссылка", "Город"]
+            sheet.insert_row(headers, 1)
+        
+        logger.info("✅ Google Sheets connected")
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ Invalid JSON in GOOGLE_SERVICE_ACCOUNT: {e}")
+        sys.exit(1)
+    except gspread.exceptions.APIError as e:
+        logger.error(f"❌ Google Sheets API error: {e}")
+        logger.error("💡 Check: Service Account has editor access to the Sheet")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"❌ Google Sheets setup error: {type(e).__name__}: {e}")
+        sys.exit(1)
 
+    # 3. Ищем вакансии на HH.ru
+    search_text = "финансовый директор"
+    area_ids = ['1', '11', '1913']  # Россия, Москва, Воронеж
 
-if __name__ == '__main__':
-    sys.exit(main())
+    params = {
+        'text': search_text,
+        'per_page': 20,
+        'order_by': 'publication_time'
+    }
+
+    # Формируем URL с множественными area= параметрами
+    query_parts = [f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items()]
+    for area in area_ids:
+        query_parts.append(f"area={area}")
+
+    url = f"https://api.hh.ru/vacancies?{'&'.join(query_parts)}"
+    headers = {
+        'User-Agent': 'hh-finance-search-bot/1.0 (your-email@example.com)',
+        'Accept': 'application/json'
+    }
+
+    try:
+        logger.info(f"🔍 Requesting: {url[:100]}...")
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        items = data.get('items', [])
+        
+        logger.info(f"📦 Found {len(items)} vacancies from HH.ru API")
+        
+        # 4. Записываем данные в таблицу
+        rows_to_add = []
+        for idx, item in enumerate(items, 1):
+            try:
+                # Зарплата
+                salary = item.get('salary') or {}
+                if salary and (salary.get('from') or salary.get('to')):
+                    frm = salary.get('from', '')
+                    to = salary.get('to', '')
+                    currency = salary.get('currency', 'RUB')
+                    salary_text = f"{frm if frm else '?'}-{to if to else '?'} {currency}"
+                else:
+                    salary_text = "Не указана"
+                
+                # Дата публикации
+                pub_date_str = item.get('published_at')
+                if pub_date_str:
+                    # Парсинг даты с обработкой разных форматов
+                    pub_date_str = pub_date_str.replace('Z', '+00:00')
+                    try:
+                        pub_date = datetime.fromisoformat(pub_date_str)
+                    except ValueError:
+                        pub_date = datetime.now(timezone.utc)
+                    days_diff = (datetime.now(timezone.utc) - pub_date).days
+                else:
+                    days_diff = 0
+                
+                # Данные строки
+                row = [
+                    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                    item.get('name', 'Без названия'),
+                    salary_text,
+                    (item.get('employer') or {}).get('name', 'Не указано'),
+                    days_diff,
+                    item.get('alternate_url', ''),
+                    (item.get('area') or {}).get('name', '')
+                ]
+                rows_to_add.append(row)
+                
+            except Exception as row_error:
+                logger.warning(f"⚠️ Skipping item #{idx}: {row_error}")
+                continue
+        
+        # 5. Запись в таблицу
+        if rows_to_add:
+            logger.info(f"📤 Inserting {len(rows_to_add)} rows into sheet...")
+            # Вставляем после заголовка (строка 2)
+            sheet.insert_rows(rows_to_add, 2)
+            logger.info(f"✅ Successfully added {len(rows_to_add)} rows")
+        else:
+            logger.info("ℹ️ No new vacancies found matching criteria")
+            
+    except requests.exceptions.Timeout:
+        logger.error("❌ HH.ru API request timed out")
+        sys.exit(1)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ HH.ru API request failed: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"❌ Unexpected error: {type(e).__name__}: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        sys.exit(1)
+    
+    logger.info("🎉 Search completed successfully!")
+
+# 🔧 ИСПРАВЛЕНО: было `if name == "main":`
+if __name__ == "__main__":
+    main()
