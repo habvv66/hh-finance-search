@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import urllib.parse
 
 def main():
     print("Start searching...")
@@ -33,16 +34,25 @@ def main():
         return
 
     # 3. Ищем вакансии на HH.ru
-    # Финансовый директор в Воронеже и Москве
-    #areas = '11, 1913' # 11 - Москва, 1913 - Воронеж
-    #search_text = "Финансовый директор"
-    areas = '1'  # 1 = Россия целиком
-    search_text = "финансовый"  # найдёт и "финансовый директор", и "финансовый аналитик"
+    search_text = "финансовый директор"
+    area_ids = ['1', '11', '1913']  # Россия, Москва, Воронеж
     
-    url = f"https://api.hh.ru/vacancies?text={search_text}&area={areas}&order_by=publication_time&per_page=10"
+    params = {
+        'text': search_text,
+        'per_page': 20,
+        'order_by': 'publication_time'
+    }
+    
+    # Формируем URL с несколькими параметрами area=
+    query_parts = [f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items()]
+    for area in area_ids:
+        query_parts.append(f"area={area}")
+    
+    url = f"https://api.hh.ru/vacancies?{'&'.join(query_parts)}"
+    headers = {'User-Agent': 'hh-finance-search-bot/1.0'}
     
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=headers)
         data = response.json()
         items = data.get('items', [])
         
@@ -59,7 +69,6 @@ def main():
                 currency = salary.get('currency', 'RUB')
                 salary_text = f"{frm}-{to} {currency}"
             
-            # Дата публикации
             pub_date_str = item.get('published_at')
             pub_date = datetime.fromisoformat(pub_date_str.replace('Z', '+00:00'))
             days_diff = (datetime.now(pub_date.tzinfo) - pub_date).days
@@ -75,7 +84,6 @@ def main():
             ])
             
         if rows_to_add:
-            # Вставляем после заголовков
             sheet.insert_rows(rows_to_add, 2)
             print(f"Added {len(rows_to_add)} rows to sheet.")
         else:
