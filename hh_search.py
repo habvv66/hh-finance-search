@@ -34,8 +34,10 @@ def main():
 
     # 3. Ищем вакансии на HH.ru
     # Финансовый директор в Воронеже и Москве
-    areas = '11, 1913' # 11 - Москва, 1913 - Воронеж
-    search_text = "Финансовый директор"
+    #areas = '11, 1913' # 11 - Москва, 1913 - Воронеж
+    #search_text = "Финансовый директор"
+    areas = '1'  # 1 = Россия целиком
+    search_text = "финансовый"  # найдёт и "финансовый директор", и "финансовый аналитик"
     
     url = f"https://api.hh.ru/vacancies?text={search_text}&area={areas}&order_by=publication_time&per_page=10"
     
