@@ -21,10 +21,11 @@ jobs:
       # 📦 БАЗОВАЯ НАСТРОЙКА
       # ─────────────────────────────────────────────────────
       - name: 📥 Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
+      # ИСПРАВЛЕНИЕ: Обновлено до v5 для поддержки Node.js 24
       - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
@@ -42,6 +43,7 @@ jobs:
           echo "=== WORKING DIRECTORY ==="
           pwd
           ls -la
+
       # ─────────────────────────────────────────────────────
       # ⚙️ УСТАНОВКА ЗАВИСИМОСТЕЙ
       # ─────────────────────────────────────────────────────
