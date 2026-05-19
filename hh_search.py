@@ -29,14 +29,12 @@ def main():
         print(f"Google Error: {e}")
         return
 
-    # Запрос к HH.ru
     params = {
         'text': 'финансовый директор',
         'area': 113,
         'per_page': 10
     }
     
-    # ВАЖНО: Стандартный браузерный User-Agent
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json'
